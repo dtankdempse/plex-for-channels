@@ -1,3 +1,6 @@
+# Edited by dtankdempse
+Added groups to the channels.
+
 # Plex for Channels
 
 Current version: **1.09**
