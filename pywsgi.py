@@ -1,9 +1,12 @@
 from gevent.pywsgi import WSGIServer
 from flask import Flask, redirect, request, Response, send_file
 from threading import Thread
+import requests
 import subprocess, os, sys, importlib, schedule, time
+
 # import flask module
 from gevent import monkey
+
 monkey.patch_all()
 
 version = "1.10a"
@@ -20,12 +23,22 @@ else:
 
 plex_country_code = os.environ.get("PLEX_CODE")
 if plex_country_code:
-   plex_country_list = plex_country_code.split(',')
+    plex_country_list = plex_country_code.split(",")
 else:
-   plex_country_list = ['local']
+    plex_country_list = ["local"]
 
 
-ALLOWED_COUNTRY_CODES = ['us_east', 'us_west', 'local', 'ca', 'uk', 'nz', 'au', 'mx', 'es']
+ALLOWED_COUNTRY_CODES = [
+    "us_east",
+    "us_west",
+    "local",
+    "ca",
+    "uk",
+    "nz",
+    "au",
+    "mx",
+    "es",
+]
 # instance of flask application
 app = Flask(__name__)
 provider = "plex"
@@ -57,6 +70,7 @@ url = f'<!DOCTYPE html>\
                 Last Updated: {updated_date}\
               '
 
+
 @app.route("/")
 def index():
     host = request.host
@@ -66,10 +80,12 @@ def index():
         # ul = f'<p class="subtitle">channel-id by "provider"-"id" (i.mjh.nz compatibility): <a href="{pl}">{pl}</a><br></p><ul>'
         for code in plex_country_list:
             pl = f"http://{host}/{provider}/{code}/playlist.m3u"
-            ul += f"<li>{provider.upper()} {code.upper()}: <a href='{pl}'>{pl}</a></li>\n"
+            ul += (
+                f"<li>{provider.upper()} {code.upper()}: <a href='{pl}'>{pl}</a></li>\n"
+            )
             pl = f"http://{host}/mjh_compatible/{provider}/{code}/playlist.m3u"
             ul += f"<li>{provider.upper()} {code.upper()} MJH Compatible: <a href='{pl}'>{pl}</a></li>\n"
-            if code in ['local', 'us_east', 'us_west']:
+            if code in ["local", "us_east", "us_west"]:
                 pl = f"http://{host}/{provider}/{code}/playlist.m3u?gracenote=include"
                 ul += f"<li>{provider.upper()} {code.upper()} Gracenote Playlist: <a href='{pl}'>{pl}</a></li>\n"
                 pl = f"http://{host}/{provider}/{code}/playlist.m3u?gracenote=exclude"
@@ -84,77 +100,89 @@ def index():
         ul += f"<li>INVALID COUNTRY CODE in \"{', '.join(plex_country_list).upper()}\"</li>\n"
     return f"{url}<ul>{ul}</ul></div></section></body></html>"
 
+
 @app.route("/token/<country_code>")
 def token(country_code):
     # host = request.host
     token = providers[provider].token(country_code)
-    return(token)
+    return token
+
+
+# URL for genre data
+GENRE_URL = (
+    "https://github.com/dtankdempse/free-iptv-channels/raw/main/plex/channels.json"
+)
+genre_cache = {}
+
+
+def fetch_and_update_genres():
+    print("Fetching genres...")
+    try:
+        response = requests.get(GENRE_URL)
+        response.raise_for_status()  # Ensure we notice bad responses
+        genre_data = response.json()
+        global genre_cache
+        genre_cache = {item["Title"]: item["Genre"] for item in genre_data}
+        print("Genre cache updated.")
+    except requests.RequestException as e:
+        print(f"Error fetching genres: {e}")
+
+
+def start_genre_updater():
+    while True:
+        fetch_and_update_genres()
+        time.sleep(86400)  # Update genres every 24 hours
+
+
+# Start the genre updater thread
+genre_thread = Thread(target=start_genre_updater, daemon=True)
+genre_thread.start()
+
 
 @app.get("/<provider>/<country_code>/playlist.m3u")
 def playlist(provider, country_code):
-    gracenote = request.args.get('gracenote')
-    filter_stations = request.args.get('filtered')
-
     if country_code not in ALLOWED_COUNTRY_CODES:
-        return "Invalid county code", 400
+        return "Invalid country code", 400
 
-    host = request.host
+    try:
+        stations, token, _ = providers[provider].channels(country_code)
+        stations = sorted(stations, key=lambda x: x.get("name", ""))
+        m3u = "#EXTM3U\n"
+        for station in stations:
+            genre = genre_cache.get(station.get("name"), "Uncategorized")
+            m3u += f"#EXTINF:-1 channel-id=\"{provider}-{station.get('slug')}\" tvg-id=\"{station.get('id')}\" "
+            m3u += (
+                f"tvg-chno=\"{''.join(map(str, station.get('number', [])))}\" "
+                if station.get("number")
+                else ""
+            )
+            m3u += f"group-title=\"{genre}\" tvg-logo=\"{''.join(map(str, station.get('logo', [])))}\" "
+            m3u += f"tvg-name=\"{station.get('call_sign')}\"{',' if station.get('call_sign') else ''}"
+            m3u += f"{station.get('name')}\n"
+            m3u += f"https://epg.provider.plex.tv{station.get('key')}?X-Plex-Token={token}\n\n"
+        return Response(m3u, content_type="audio/x-mpegurl")
+    except Exception as e:
+        return str(e), 500
 
-    stations, token, err = providers[provider].channels(country_code)
-    if err is not None: return err, 500
-
-    # Filter out Hidden items or items without Hidden Attribute
-    tmsid_stations = []
-    no_tmsid_stations = []
-    if stations:
-        tmsid_stations = list(filter(lambda d: d.get('tmsid'), stations))
-        no_tmsid_stations = list(filter(lambda d: d.get('tmsid', None) is None, stations))
-
-    if 'unfiltered' not in request.args and gracenote == 'include':
-        data_group = tmsid_stations
-    elif  'unfiltered' not in request.args and gracenote == 'exclude':
-        data_group = no_tmsid_stations
-    else:
-        data_group = stations
-
-
-    stations = sorted(stations, key = lambda i: i.get('name', ''))
-
-    if err is not None:
-        return err, 500
-    m3u = "#EXTM3U\r\n\r\n"
-    for s in data_group:
-        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('slug')}\""
-        m3u += f" tvg-id=\"{s.get('id')}\""
-        m3u += f" tvg-chno=\"{''.join(map(str, s.get('number', [])))}\"" if s.get('number') else ""
-        m3u += f" group-title=\"{''.join(map(str, s.get('group', [])))}\"" if s.get('group') else ""
-        m3u += f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\"" if s.get('logo') else ""
-        m3u += f" tvg-name=\"{s.get('call_sign')}\"" if s.get('call_sign') else ""
-        if gracenote == 'include':
-            m3u += f" tvg-shift=\"{s.get('time_shift')}\"" if s.get('time_shift') else ""
-            m3u += f" tvc-guide-stationid=\"{s.get('tmsid')}\"" if s.get('tmsid') else ""
-        m3u += f",{s.get('name') or s.get('call_sign')}\n"
-        m3u += f"https://epg.provider.plex.tv{s.get('key')}?X-Plex-Token={token}\n\n"
-
-    response = Response(m3u, content_type='audio/x-mpegurl')
-    return (response)
 
 @app.get("/<provider>/<country_code>/channels.json")
 def channels_json(provider, country_code):
-        stations, token, err = providers[provider].channels(country_code)
-        return (stations)
+    stations, token, err = providers[provider].channels(country_code)
+    return stations
+
 
 @app.get("/<provider>/<country_code>/epg.json")
 def epg_json(provider, country_code):
-        epg, err = providers[provider].epg_json(country_code)
-        if err: return err
-        return epg
+    epg, err = providers[provider].epg_json(country_code)
+    if err:
+        return err
+    return epg
 
 
 @app.get("/mjh_compatible/<provider>/<country_code>/playlist.m3u")
 def playlist_mjh_compatible(provider, country_code):
-    gracenote = request.args.get('gracenote')
-    filter_stations = request.args.get('filtered')
+    gracenote = request.args.get("gracenote")
+    filter_stations = request.args.get("filtered")
 
     if country_code not in ALLOWED_COUNTRY_CODES:
         return "Invalid county code", 400
@@ -163,47 +191,53 @@ def playlist_mjh_compatible(provider, country_code):
 
     stations, token, err = providers[provider].channels(country_code)
     # Filter out Hidden items or items without Hidden Attribute
-    tmsid_stations = list(filter(lambda d: d.get('tmsid'), stations))
-    no_tmsid_stations = list(filter(lambda d: d.get('tmsid', None) is None, stations))
+    tmsid_stations = list(filter(lambda d: d.get("tmsid"), stations))
+    no_tmsid_stations = list(filter(lambda d: d.get("tmsid", None) is None, stations))
 
-    if 'unfiltered' not in request.args and gracenote == 'include':
+    if "unfiltered" not in request.args and gracenote == "include":
         data_group = tmsid_stations
-    elif  'unfiltered' not in request.args and gracenote == 'exclude':
+    elif "unfiltered" not in request.args and gracenote == "exclude":
         data_group = no_tmsid_stations
     else:
         data_group = stations
 
     if err is not None:
         return err, 500
-    
-    stations = sorted(stations, key = lambda i: i.get('name', ''))
+
+    stations = sorted(stations, key=lambda i: i.get("name", ""))
 
     m3u = "#EXTM3U\r\n\r\n"
     for s in data_group:
         m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('id')}\""
         m3u += f" tvg-id=\"{s.get('id')}\""
-        m3u += f" tvg-chno=\"{s.get('number')}\"" if s.get('number') else ""
+        m3u += f" tvg-chno=\"{s.get('number')}\"" if s.get("number") else ""
         # m3u += f" group-title=\"{''.join(map(str, s.get('group', [])))}\"" if s.get('group') else ""
-        m3u += f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\"" if s.get('logo') else ""
-        m3u += f" tvg-name=\"{s.get('call_sign')}\"" if s.get('call_sign') else ""
-        if gracenote == 'include':
-            m3u += f" tvg-shift=\"{s.get('time_shift')}\"" if s.get('time_shift') else ""
-            m3u += f" tvc-guide-stationid=\"{s.get('tmsid')}\"" if s.get('tmsid') else ""
+        m3u += (
+            f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\""
+            if s.get("logo")
+            else ""
+        )
+        m3u += f" tvg-name=\"{s.get('call_sign')}\"" if s.get("call_sign") else ""
+        if gracenote == "include":
+            m3u += (
+                f" tvg-shift=\"{s.get('time_shift')}\"" if s.get("time_shift") else ""
+            )
+            m3u += (
+                f" tvc-guide-stationid=\"{s.get('tmsid')}\"" if s.get("tmsid") else ""
+            )
         m3u += f",{s.get('name') or s.get('call_sign')}\n"
         m3u += f"https://epg.provider.plex.tv{s.get('key')}?X-Plex-Token={token}\n\n"
 
-    response = Response(m3u, content_type='audio/x-mpegurl')
-    return (response)
-
-
+    response = Response(m3u, content_type="audio/x-mpegurl")
+    return response
 
 
 @app.get("/<provider>/epg/<country_code>/<filename>")
 def epg_xml(provider, country_code, filename):
 
     # Generate ALLOWED_FILENAMES and ALLOWED_GZ_FILENAMES based on ALLOWED_COUNTRY_CODES
-    ALLOWED_EPG_FILENAMES = {f'epg-{code}.xml' for code in ALLOWED_COUNTRY_CODES}
-    ALLOWED_GZ_FILENAMES = {f'epg-{code}.xml.gz' for code in ALLOWED_COUNTRY_CODES}
+    ALLOWED_EPG_FILENAMES = {f"epg-{code}.xml" for code in ALLOWED_COUNTRY_CODES}
+    ALLOWED_GZ_FILENAMES = {f"epg-{code}.xml.gz" for code in ALLOWED_COUNTRY_CODES}
 
     # Specify the file path
     # file_path = 'epg.xml'
@@ -212,17 +246,25 @@ def epg_xml(provider, country_code, filename):
             return "Invalid county code", 400
 
         # Check if the provided filename is allowed in either format
-        if filename not in ALLOWED_EPG_FILENAMES and filename not in ALLOWED_GZ_FILENAMES:
-        # Check if the provided filename is allowed
-        # if filename not in ALLOWED_EPG_FILENAMES:
+        if (
+            filename not in ALLOWED_EPG_FILENAMES
+            and filename not in ALLOWED_GZ_FILENAMES
+        ):
+            # Check if the provided filename is allowed
+            # if filename not in ALLOWED_EPG_FILENAMES:
             return "Invalid filename", 400
-        
+
         # Specify the file path based on the provider and filename
-        file_path = f'{filename}'
+        file_path = f"{filename}"
 
         # Return the file without explicitly opening it
-        if filename in ALLOWED_EPG_FILENAMES: 
-            return send_file(file_path, as_attachment=False, download_name=file_path, mimetype='text/plain')
+        if filename in ALLOWED_EPG_FILENAMES:
+            return send_file(
+                file_path,
+                as_attachment=False,
+                download_name=file_path,
+                mimetype="text/plain",
+            )
         elif filename in ALLOWED_GZ_FILENAMES:
             return send_file(file_path, as_attachment=True, download_name=file_path)
     except FileNotFoundError:
@@ -239,7 +281,8 @@ def epg_scheduler():
         for code in plex_country_list:
             # print("Scheduled EPG Data Update")
             error = providers[provider].create_xml_file(code)
-            if error: print(f"{error}")
+            if error:
+                print(f"{error}")
 
 
 # Define a function to run the scheduler in a separate thread
@@ -256,7 +299,7 @@ def scheduler_thread():
             schedule.every(30).minutes.do(epg_scheduler)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Schedule the function to run every thirty minutes
     schedule.every(30).minutes.do(epg_scheduler)
 
@@ -264,7 +307,7 @@ if __name__ == '__main__':
         for code in plex_country_list:
             print("Initialize XML File")
             error = providers[provider].create_xml_file(code)
-            if error: 
+            if error:
                 print(f"{error}")
     else:
         print(f"Invalid PLEX_CODE: {plex_country_list}")
@@ -273,6 +316,6 @@ if __name__ == '__main__':
         # Start the scheduler thread
         thread = Thread(target=scheduler_thread)
         thread.start()
-        WSGIServer(('', port), app, log=None).serve_forever()
+        WSGIServer(("", port), app, log=None).serve_forever()
     except OSError as e:
         print(str(e))
