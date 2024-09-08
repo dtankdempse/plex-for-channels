@@ -1,11 +1,12 @@
+from gevent import monkey
+
+monkey.patch_all()
+
 from gevent.pywsgi import WSGIServer
 from flask import Flask, redirect, request, Response, send_file
 from threading import Thread
 import requests
 import subprocess, os, sys, importlib, schedule, time
-
-# import flask module
-from gevent import monkey
 
 monkey.patch_all()
 
@@ -204,14 +205,16 @@ def playlist_mjh_compatible(provider, country_code):
     if err is not None:
         return err, 500
 
-    stations = sorted(stations, key=lambda i: i.get("name", ""))
+    stations = sorted(data_group, key=lambda i: i.get("name", ""))
 
     m3u = "#EXTM3U\r\n\r\n"
     for s in data_group:
-        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('id')}\""
-        m3u += f" tvg-id=\"{s.get('id')}\""
+        genre = genre_cache.get(
+            s.get("name"), "Uncategorized"
+        )  # Fetch genre for the station
+        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('id')}\" tvg-id=\"{s.get('id')}\""
         m3u += f" tvg-chno=\"{s.get('number')}\"" if s.get("number") else ""
-        # m3u += f" group-title=\"{''.join(map(str, s.get('group', [])))}\"" if s.get('group') else ""
+        m3u += f' group-title="{genre}"'  # Add genre as group-title
         m3u += (
             f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\""
             if s.get("logo")
