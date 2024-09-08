@@ -142,28 +142,69 @@ genre_thread.start()
 
 @app.get("/<provider>/<country_code>/playlist.m3u")
 def playlist(provider, country_code):
-    if country_code not in ALLOWED_COUNTRY_CODES:
-        return "Invalid country code", 400
+    gracenote = request.args.get("gracenote")
+    filter_stations = request.args.get("filtered")
 
-    try:
-        stations, token, _ = providers[provider].channels(country_code)
-        stations = sorted(stations, key=lambda x: x.get("name", ""))
-        m3u = "#EXTM3U\n"
-        for station in stations:
-            genre = genre_cache.get(station.get("name"), "Uncategorized")
-            m3u += f"#EXTINF:-1 channel-id=\"{provider}-{station.get('slug')}\" tvg-id=\"{station.get('id')}\" "
+    if country_code not in ALLOWED_COUNTRY_CODES:
+        return "Invalid county code", 400
+
+    host = request.host
+
+    stations, token, err = providers[provider].channels(country_code)
+    if err is not None:
+        return err, 500
+
+    # Filter out Hidden items or items without Hidden Attribute
+    tmsid_stations = []
+    no_tmsid_stations = []
+    if stations:
+        tmsid_stations = list(filter(lambda d: d.get("tmsid"), stations))
+        no_tmsid_stations = list(
+            filter(lambda d: d.get("tmsid", None) is None, stations)
+        )
+
+    if "unfiltered" not in request.args and gracenote == "include":
+        data_group = tmsid_stations
+    elif "unfiltered" not in request.args and gracenote == "exclude":
+        data_group = no_tmsid_stations
+    else:
+        data_group = stations
+
+    stations = sorted(stations, key=lambda i: i.get("name", ""))
+
+    if err is not None:
+        return err, 500
+    m3u = "#EXTM3U\r\n\r\n"
+    for s in data_group:
+        # Fetch genre for the station, default to "Uncategorized" if not found
+        genre = genre_cache.get(s.get("name"), "Uncategorized")
+
+        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('slug')}\""
+        m3u += f" tvg-id=\"{s.get('id')}\""
+        m3u += (
+            f" tvg-chno=\"{''.join(map(str, s.get('number', [])))}\""
+            if s.get("number")
+            else ""
+        )
+        m3u += f' group-title="{genre}"'  # Add the genre as group-title
+        m3u += (
+            f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\""
+            if s.get("logo")
+            else ""
+        )
+        m3u += f" tvg-name=\"{s.get('call_sign')}\"" if s.get("call_sign") else ""
+        if gracenote == "include":
             m3u += (
-                f"tvg-chno=\"{''.join(map(str, station.get('number', [])))}\" "
-                if station.get("number")
-                else ""
+                f" tvg-shift=\"{s.get('time_shift')}\"" if s.get("time_shift") else ""
             )
-            m3u += f"group-title=\"{genre}\" tvg-logo=\"{''.join(map(str, station.get('logo', [])))}\" "
-            m3u += f"tvg-name=\"{station.get('call_sign')}\"{',' if station.get('call_sign') else ''}"
-            m3u += f"{station.get('name')}\n"
-            m3u += f"https://epg.provider.plex.tv{station.get('key')}?X-Plex-Token={token}\n\n"
-        return Response(m3u, content_type="audio/x-mpegurl")
-    except Exception as e:
-        return str(e), 500
+            m3u += (
+                f" tvc-guide-stationid=\"{s.get('tmsid')}\"" if s.get("tmsid") else ""
+            )
+        m3u += f",{s.get('name') or s.get('call_sign')}\n"
+        m3u += f"https://epg.provider.plex.tv{s.get('key')}?X-Plex-Token={token}\n\n"
+
+    response = Response(m3u, content_type="audio/x-mpegurl")
+    return response
 
 
 @app.get("/<provider>/<country_code>/channels.json")
@@ -205,16 +246,17 @@ def playlist_mjh_compatible(provider, country_code):
     if err is not None:
         return err, 500
 
-    stations = sorted(data_group, key=lambda i: i.get("name", ""))
+    stations = sorted(stations, key=lambda i: i.get("name", ""))
 
     m3u = "#EXTM3U\r\n\r\n"
     for s in data_group:
-        genre = genre_cache.get(
-            s.get("name"), "Uncategorized"
-        )  # Fetch genre for the station
-        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('id')}\" tvg-id=\"{s.get('id')}\""
+        # Fetch genre for the station, default to "Uncategorized" if not found
+        genre = genre_cache.get(s.get("name"), "Uncategorized")
+
+        m3u += f"#EXTINF:-1 channel-id=\"{provider}-{s.get('id')}\""
+        m3u += f" tvg-id=\"{s.get('id')}\""
         m3u += f" tvg-chno=\"{s.get('number')}\"" if s.get("number") else ""
-        m3u += f' group-title="{genre}"'  # Add genre as group-title
+        m3u += f' group-title="{genre}"'  # Add the genre as group-title
         m3u += (
             f" tvg-logo=\"{''.join(map(str, s.get('logo', [])))}\""
             if s.get("logo")
