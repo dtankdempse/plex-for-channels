@@ -29,12 +29,12 @@ This takes Plex Live TV Channels and generates an M3U playlist and EPG XMLTV fil
     - PLEX_CODE env variable has been added. Controls which country(ies) this session will utilize
 
 # Running
-The recommended way of running is to pull the image from [GitHub](https://github.com/jgomez177/plex-for-channels/pkgs/container/plex-for-channels).
+The recommended way of running is to pull the image from [GitHub](https://github.com/dtankdempse/plex-for-channels/pkgs/container/plex-for-channels).
 
-    docker run -d --restart unless-stopped --network=host -e PLEX_PORT=[your_port_number_here] -e PLEX_CODE=local[,us_west,etc.] --name  plex-for-channels ghcr.io/jgomez177/plex-for-channels
+    docker run -d --restart unless-stopped --network=host -e PLEX_PORT=[your_port_number_here] -e PLEX_CODE=local[,us_west,etc.] --name  plex-for-channels ghcr.io/dtankdempse/plex-for-channels
 or
 
-    docker run -d --restart unless-stopped -p [your_port_number_here]:7777 --name  plex-for-channels ghcr.io/jgomez177/plex-for-channels
+    docker run -d --restart unless-stopped -p [your_port_number_here]:7777 --name  plex-for-channels ghcr.io/dtankdempse/plex-for-channels
 
 You can retrieve the playlist and EPG via the status page.
 
@@ -55,7 +55,7 @@ You can retrieve the playlist and EPG via the status page.
 
 Adding a docker volume to /app/plex_data will allow you to add a custom comma delimited csv file to add or change any of the default gracenote matching for any plex channel
 
-    docker run -d --restart unless-stopped --network=host -e PLEX_PORT=[your_port_number_here] -v [your_file_location_here]:/app/plex_data --name  plex-for-channels ghcr.io/jgomez177/plex-for-channels
+    docker run -d --restart unless-stopped --network=host -e PLEX_PORT=[your_port_number_here] -v [your_file_location_here]:/app/plex_data --name  plex-for-channels ghcr.io/dtankdempse/plex-for-channels
 
 Create a file called `plex_custom_tmsid.csv` with the following headers (case-sensitive):
 | id |  name | tmsid | time_shift | 
